@@ -353,7 +353,7 @@ def build_occupancy_voxels(
 
 if __name__ == "__main__":
 
-    depth_path = '/home/mtoso/Documents/Code/AMI_Collab/2DSemanticMap/dept_maps.npy'
+    depth_path = '/home/mtoso/Documents/Code/AMI_Collab/2DSemanticMap/dept_maps.npz'
     detph = np.load(depth_path, allow_pickle=True)
 
     origin, dims, vs, hits, frees, p_occ, occ = build_occupancy_voxels(

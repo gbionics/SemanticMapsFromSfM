@@ -31,11 +31,17 @@ def predict_depth(images_pil, processor, model):
     returns: depth_rel (N,1,H,W) float32 on `device`
     Depth maps are *relative* (arbitrary scale).
     """
+    
+    h_i, w_i = images_pil.size[1], images_pil.size[0]
+    
     inputs = processor(images=images_pil, return_tensors="pt").to(device)
     outputs = model(**inputs)
     # outputs.predicted_depth: (N, H, W) relative depth
     depth = outputs.predicted_depth.unsqueeze(1)  # (N,1,H,W)
-    return depth
+
+    depth_hw = resize_depth_to_image(depth, h_i, w_i)
+
+    return depth_hw
 
 
 def check_depth_estimator(img_path="Data/images/PXL_20250930_080552967.jpg", save = False):
@@ -252,7 +258,7 @@ def main():
         depth_metric_maps[image_id] = depth_metric_i.cpu()
 
         print(f"Image {img.name}: scale = {s_i:.4f}, depth_metric shape = {depth_metric_i.shape}")
-    np.save('dept_maps.npy', depth_metric_maps)
+    np.savez('dept_maps', depth_metric_maps)
 
 
 
