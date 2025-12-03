@@ -16,6 +16,7 @@ from sklearn.cluster import HDBSCAN
 import scipy.sparse as sp 
 from types import SimpleNamespace
 from plyfile import PlyData
+import trimesh
 
 
 def plot3D(
@@ -161,6 +162,41 @@ def extract_data_from_gaussians(model_path, device, seg_features_dim=512):
     return xyz, classes, colors
 
 
+def cloud_to_heatmap(points):
+    from scipy.interpolate import griddata
+    x = points[:, 0]
+    y = points[:, 1]   # height
+    z = points[:, 2]
+
+    # 1. Create grid in the X-Z plane
+    grid_res = 300  # resolution of the output heatmap
+    xi = np.linspace(x.min(), x.max(), grid_res)
+    zi = np.linspace(z.min(), z.max(), grid_res)
+    Xi, Zi = np.meshgrid(xi, zi)
+
+    # 2. Interpolate height values onto grid
+    Yi = griddata(
+        points[:, [0, 2]],  # input coordinates: (x, z)
+        y,                  # height values
+        (Xi, Zi),           # output grid
+        method='linear'     # or 'nearest' or 'cubic'
+    )
+
+    # 3. Plot heatmap
+    plt.figure(figsize=(8, 6))
+    plt.imshow(
+        Yi, 
+        extent=[x.min(), x.max(), z.min(), z.max()],
+        origin='lower',
+        cmap='turbo'   # or 'viridis', 'terrain', etc.
+    )
+    plt.colorbar(label="Height (y)")
+    plt.xlabel("X")
+    plt.ylabel("Z")
+    plt.title("Height Map on X–Z Plane (Color = Y Height)")
+    plt.show()
+
+
 if __name__ == "__main__":
     model_path = 'Data/2DGS Model/cris_lab_full.ply'
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -169,12 +205,89 @@ if __name__ == "__main__":
     xyz_o3d = o3d.geometry.PointCloud()
     xyz_o3d.points = o3d.utility.Vector3dVector(xyz)
 
+    # Filter out outliers points
+    
     cl, ind = xyz_o3d.remove_statistical_outlier(nb_neighbors=20,
                                                     std_ratio=2.0)
     
-    o3d.visualization.draw_geometries([cl.voxel_down_sample(voxel_size=0.02)])
+    # Sparsify the representation using a voxel grid
+
+    voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(cl,
+                                                            voxel_size=0.05)
     
+
+    xyz_reduced = np.asarray(cl.points)
+    bottom_idx = xyz_reduced[:,1] > -0.5
+    xyz_low = xyz_reduced[bottom_idx]
+
+    xyz_low -= np.max(xyz_low, 0)
+    #xyz_low[:,1] *= -1 
+    #xyz_low[:,0] *= -1 
+    
+    xyz_low *= -1
+
+    # cloud_to_heatmap(xyz_low)
+
+    cl_low = o3d.geometry.PointCloud()
+    cl_low.points = o3d.utility.Vector3dVector(xyz_low)
+
+    o3d.visualization.draw_geometries([cl_low.voxel_down_sample(voxel_size=0.02)])
+
+    plot3D(xyz_low, 15000)
+
+    # Producing a 2D affordability map based on the reconstructed pc
+
+    ## Define the size of the image
+
+    h, _ , w = (xyz_low.max(0) - xyz_low.min(0))
+    origin_x = xyz_low.min(0)[0] - 0.1 * h
+    origin_y = xyz_low.min(0)[2] - 0.1 * w
+
+    bin_size = 0.05
+
+    n_bins_x = int(1.1 * h / bin_size)
+    n_bins_y = int(1.1 * w / bin_size)
+
+    map = np.zeros([n_bins_x, n_bins_y])
+
+    xyz_low = xyz_low[xyz_low[:,1] > 1.0]
+    plt.scatter(x=xyz_low[:,0], y=xyz_low[:,2], s=0.05)
+    plt.axis('equal')
+    plt.show()
+
+    if (0):
+
+        xyz_low_x = np.floor((xyz_low[:,0] - origin_x)/bin_size)
+        xyz_low_y = np.floor((xyz_low[:,2] - origin_y)/bin_size)
+
+        for i, j in zip(range(n_bins_x), range(n_bins_y)):
+            # finding all points in slot (i, j). Not necessarily most efficient approach, but works for now
+
+            a = np.abs(xyz_low_x - i) < 0.5
+            b = np.abs(xyz_low_y - j) < 0.5
+
+            slot_points = xyz_low[a * b]
+
+            if len(slot_points)> 0:
+                map[i,j] = np.max(slot_points)
+            else:
+                map[i,j] = 0
+
+        plt.imshow(map, cmap='hot', interpolation = 'nearest')
+        plt.show()
+
+    # Adding to the heatmap the location of previously captured images. 
+
+
+
+    # Turn the point cloud into a voxel grid
+
+    voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(cl,
+                                                            voxel_size=0.05)
+    o3d.visualization.draw_geometries([voxel_grid])
     xyz_final = np.asarray(xyz_o3d.points)
-    
+
+    # Need to add a) clustering b) assigning to each cluster a color c) plotting the colored voxel grid
+
     plot3D(xyz, 15000)
     print('pippo')
