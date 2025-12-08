@@ -1,0 +1,7 @@
+name: splatting
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+prefix: /home/mtoso/miniconda3/envs/splatting

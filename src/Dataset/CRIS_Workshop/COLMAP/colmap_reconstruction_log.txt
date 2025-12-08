@@ -1,0 +1,3 @@
+	2025/12/04 13:45:41 - Starting feature extraction.
+	2025/12/04 13:48:12 - Starting feature matching.
+	2025/12/04 13:56:02 - Starting sparse reconstruction.
