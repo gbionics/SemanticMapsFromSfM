@@ -7,52 +7,8 @@ import argparse
 from datetime import datetime
 from pathlib import Path
 from PIL import Image
+from src.preprocessing import prepare_dirs, resize_images, generate_segmentation_masks
 
-
-# 0) Ensure that the correct folders are available
-
-def prepare_dirs(model_dir):
-    images_dir = os.path.join(model_dir, 'images')
-    sparse_dir = os.path.join(model_dir, 'sparse')
-    dense_dir = os.path.join(model_dir, 'dense')
-    masks_dir = os.path.join(model_dir, 'masks')
-
-    os.makedirs(images_dir, exist_ok=True)
-    os.makedirs(sparse_dir, exist_ok=True)
-    os.makedirs(dense_dir, exist_ok=True)
-    os.makedirs(masks_dir, exist_ok=True)
-
-    return images_dir, sparse_dir, masks_dir
-
-# 1) Resize all images before to make the reconstruction and NVS work easier
-
-def resize_images(input_dir, output_dir, max_side=640):
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Supported image file extensions
-    exts = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff')
-
-    for filename in os.listdir(input_dir):
-        if filename.lower().endswith(exts):
-            input_path = os.path.join(input_dir, filename)
-            output_path = os.path.join(output_dir, filename)
-
-            with Image.open(input_path) as img:
-                # Determine scale factor
-                w, h = img.size
-                scale = max_side / max(w, h)
-
-                # Compute new size
-                new_size = (int(w * scale), int(h * scale))
-
-                # Resize with high-quality resampling
-                resized_img = img.resize(new_size, Image.LANCZOS)
-
-                # Save image
-                resized_img.save(output_path)
-
-            print(f"Saved: {output_path}")
 
 # 2) Run COLMAP reconstruction to generate a sparse model
 
@@ -75,7 +31,7 @@ def run_colmap(images_dir, rec_dir, log_file):
     log_file.write(log_message)
     command = 'colmap feature_extractor \
                --image_path {:s} \
-               --ImageReader.camera_model SIMPLE_RADIAL\
+               --ImageReader.camera_model PINHOLE\
                --SiftExtraction.estimate_affine_shape=true \
                --SiftExtraction.domain_size_pooling=true \
                --database_path {:s}/database.db'.format(images_dir, rec_dir)
@@ -87,6 +43,8 @@ def run_colmap(images_dir, rec_dir, log_file):
     dt_string = now.strftime("%Y/%m/%d %H:%M:%S")
     log_message = '\t' + dt_string + ' - Starting feature matching.\n'
     log_file.write(log_message)
+    command = 'export QT_QPA_PLATFORM=offscreen'
+    os.system(command)
     command = 'colmap exhaustive_matcher \
                --SiftMatching.guided_matching=true \
                --database_path {:s}/database.db'.format(rec_dir)

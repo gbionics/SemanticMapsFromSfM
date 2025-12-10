@@ -2,10 +2,10 @@ import numpy as np
 import open3d as o3d
 import torch
 from plyfile import PlyData
-from sh_utils import SH2RGB
+from utils.sh_utils import SH2RGB
 import json
 from argparse import ArgumentParser
-from sh_utils import SH2RGB
+from utils.sh_utils import SH2RGB
 # from open_vocab_segmentor.encoders.openclip_encoder import OpenCLIPNetworkConfig, OpenCLIPNetwork
 import open3d as o3d
 from matplotlib import pyplot as plt
