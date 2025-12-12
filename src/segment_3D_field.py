@@ -23,6 +23,11 @@ try:
 except Exception:
     KMeans = None
 
+try:
+    from sklearn.cluster import MiniBatchKMeans
+except Exception:
+    MiniBatchKMeans = None
+
 def get_random_colors(num_colors: int):
     """Generate random RGB colors in [0,1], with index 0 reserved for background (black)."""
     import numpy as _np
@@ -64,6 +69,8 @@ def cluster_gaussians(
     spatial_weight: float = 1.0,
     min_cluster_size: int = 15,
     min_samples: int = 30,
+    spatial_partition: bool = True,
+    voxel_size: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Cluster gaussians using combined spatial+feature vectors.
@@ -75,23 +82,117 @@ def cluster_gaussians(
     N = len(means)
     print(f"Clustering {N} gaussians using method='{method}' (spatial_weight={spatial_weight})")
     tic = time.time()
-    combined = compute_combined_features(means, features, spatial_weight=spatial_weight)
+    # If the scene is very large, try spatial partitioning (voxel grid) first
+    if N > 200_000 and spatial_partition:
+        means_np = means.detach().cpu().numpy()
+        feats_np = features.detach().cpu().numpy()
 
-    labels = None
-    if method == "hdbscan" and HDBSCAN is not None:
-        clim = HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples)
-        labels = clim.fit_predict(combined)
+        # choose a voxel size heuristically if not provided
+        if voxel_size is None:
+            extent = means_np.max(0) - means_np.min(0)
+            # aim for ~50 divisions along the largest axis
+            voxel_size = float(max(extent) / max(1.0, 50.0)) if max(extent) > 0 else 1.0
+
+        coords = np.floor((means_np - means_np.min(0)) / voxel_size).astype(np.int64)
+        voxels, inv = np.unique(coords, axis=0, return_inverse=True)
+        n_pre = voxels.shape[0]
+        print(f"Spatial partitioning: {n_pre} voxels (voxel_size={voxel_size:.4f})")
+
+        # compute per-voxel mean positions and features
+        pre_means = np.zeros((n_pre, 3), dtype=means_np.dtype)
+        pre_feats = np.zeros((n_pre, feats_np.shape[1]), dtype=feats_np.dtype)
+        counts = np.zeros((n_pre,), dtype=np.int64)
+        for i in range(n_pre):
+            mask = inv == i
+            counts[i] = int(mask.sum())
+            if counts[i] > 0:
+                pre_means[i] = means_np[mask].mean(axis=0)
+                pre_feats[i] = feats_np[mask].mean(axis=0)
+
+        # if only a few voxels found, fall back to original approach
+        if n_pre <= 1:
+            print("Partitioning produced a single voxel, falling back to non-partitioned clustering")
+        else:
+            # combine spatial and feature modalities for voxel centers
+            combined_centers = np.concatenate([
+                (pre_means - pre_means.mean(0)) / (pre_means.std(0) + 1e-9) * spatial_weight,
+                (pre_feats - pre_feats.mean(0)) / (pre_feats.std(0) + 1e-9),
+            ], axis=1)
+
+            if method == "hdbscan" and HDBSCAN is not None:
+                clim = HDBSCAN(min_cluster_size=max(2, min_cluster_size // 10), min_samples=max(2, min_samples // 2))
+                center_labels = clim.fit_predict(combined_centers)
+            else:
+                n_clusters_cent = n_clusters or max(2, n_pre // 50)
+                if KMeans is None:
+                    raise RuntimeError("Neither HDBSCAN nor KMeans is available for clustering.")
+                km2 = KMeans(n_clusters=n_clusters_cent, random_state=42)
+                center_labels = km2.fit_predict(combined_centers)
+
+            # map voxel-level labels back to original gaussians
+            labels = center_labels[inv]
+            toc = time.time()
+            print(f"Spatial-partition clustering finished in {toc-tic:.2f}s (voxels={n_pre})")
+            # continue to compute centroids below
+    
+    # Fast two-stage path for very large N: pre-cluster features with MiniBatchKMeans (fallback)
+    if N > 200_000 and (('labels' not in locals() or labels is None) and MiniBatchKMeans is not None):
+        # choose number of preclusters to reduce problem size
+        n_pre = min(max(2000, N // 200), 20000)
+        print(f"Large scene detected (N={N}), running MiniBatchKMeans pre-clustering into {n_pre} groups")
+        feats_np = features.detach().cpu().numpy()
+        mbkm = MiniBatchKMeans(n_clusters=n_pre, batch_size=10_000, random_state=42)
+        pre_labels = mbkm.fit_predict(feats_np)
+        centers = mbkm.cluster_centers_  # [n_pre, D]
+
+        # compute per-precluster mean positions
+        means_np = means.detach().cpu().numpy()
+        pre_means = np.zeros((n_pre, 3), dtype=means_np.dtype)
+        counts = np.zeros((n_pre,), dtype=np.int64)
+        for i in range(n_pre):
+            mask = pre_labels == i
+            counts[i] = mask.sum()
+            if counts[i] > 0:
+                pre_means[i] = means_np[mask].mean(axis=0)
+
+        # run HDBSCAN/KMeans on precluster centers + positions
+        combined_centers = np.concatenate([
+            (pre_means - pre_means.mean(0)) / (pre_means.std(0) + 1e-9) * spatial_weight,
+            (centers - centers.mean(0)) / (centers.std(0) + 1e-9),
+        ], axis=1)
+
+        if method == "hdbscan" and HDBSCAN is not None:
+            clim = HDBSCAN(min_cluster_size=max(2, min_cluster_size // 10), min_samples=max(2, min_samples // 2))
+            center_labels = clim.fit_predict(combined_centers)
+        else:
+            n_clusters_cent = n_clusters or max(2, n_pre // 50)
+            if KMeans is None:
+                raise RuntimeError("Neither HDBSCAN nor KMeans is available for clustering.")
+            km2 = KMeans(n_clusters=n_clusters_cent, random_state=42)
+            center_labels = km2.fit_predict(combined_centers)
+
+        # map back to original gaussians
+        labels = center_labels[pre_labels]
+        toc = time.time()
+        print(f"Two-stage clustering finished in {toc-tic:.2f}s (preclusters={n_pre})")
     else:
-        # fallback to kmeans
-        if n_clusters is None:
-            n_clusters = max(2, int(len(combined) / 2000))
-        if KMeans is None:
-            raise RuntimeError("Neither HDBSCAN nor KMeans is available for clustering.")
-        print(f"Falling back to KMeans with n_clusters={n_clusters}")
-        km = KMeans(n_clusters=n_clusters, random_state=42)
-        labels = km.fit_predict(combined)
-    toc = time.time()
-    print(f"Clustering finished in {toc-tic:.2f}s")
+        combined = compute_combined_features(means, features, spatial_weight=spatial_weight)
+
+        labels = None
+        if method == "hdbscan" and HDBSCAN is not None:
+            clim = HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples)
+            labels = clim.fit_predict(combined)
+        else:
+            # fallback to kmeans
+            if n_clusters is None:
+                n_clusters = max(2, int(len(combined) / 2000))
+            if KMeans is None:
+                raise RuntimeError("Neither HDBSCAN nor KMeans is available for clustering.")
+            print(f"Falling back to KMeans with n_clusters={n_clusters}")
+            km = KMeans(n_clusters=n_clusters, random_state=42)
+            labels = km.fit_predict(combined)
+        toc = time.time()
+        print(f"Clustering finished in {toc-tic:.2f}s")
 
     # compute centroids in feature space (features argument)
     labels_np = np.asarray(labels)
