@@ -4,14 +4,15 @@ from src.reconstruct_with_COLMAP import run_colmap
 
 
 root_dir = os.getcwd()
-path_to_raw_images = '/home/mtoso/Documents/Code/AMI_Collab/2DSemanticMap/Dataset/Reaver/images_raw'
-model_name = 'Reaver'
+path_to_raw_images = '/home/mtoso/Documents/Code/AMI_Collab/2DSemanticMap/Dataset/RobotLab/Images_raw'
+# path_to_raw_images = '/home/mtoso/Documents/Code/AMI_Collab/2DSemanticMap/Dataset/CRIS_Workshop/images_raw'
+model_name = 'RobotWorkshop'
 
-preprocess = True
+preprocess = False
 image_size_max = 640
 
-generate_sfm = True
-
+generate_sfm = False
+generate_3dgs = True
 
 # Main file for the reconstruction and rendering automated pipeline
 
@@ -31,9 +32,13 @@ else:
         
 # 2) Generate the COLMAP SfM model
 
-"""if generate_sfm:
+if generate_sfm:
     print('Generating the SfM reconstruction via Colmap')
     log_file_name = os.path.join(model_dir, 'colmap_reconstruction_log.txt')
     with open(log_file_name, 'w',
           buffering=1) as log_file:  
-        run_colmap(images_dir, model_dir, log_file)"""
+        run_colmap(images_dir, model_dir, log_file)
+        
+
+if generate_3dgs:
+    print('pippo')    

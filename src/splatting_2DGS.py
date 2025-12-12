@@ -45,7 +45,7 @@ class Config:
     ckpt: Optional[str] = None
 
     # Path to the Mip-NeRF 360 dataset
-    data_dir: str = "/home/mtoso/Documents/Code/AMI_Collab/2DSemanticMap/Dataset/Reaver/COLMAP"
+    data_dir: str = "/home/mtoso/Documents/Code/AMI_Collab/2DSemanticMap/Dataset/RobotLab"
     # Downsample factor for the dataset 
     data_factor: int = 1  # This is pointless, was needed in the original code for a specific dataset structure. 
     # Path to folder containing segmentation masks (optional, for seg_opt)
@@ -54,9 +54,9 @@ class Config:
     #   - {image_name}_am.npy: adjacency matrix (optional)
     #   - {image_name}_lm.npy: Laplacian matrix (optional)
     #   - {image_name}_maps.npy: hierarchical level maps (optional)
-    masks_dir: Optional[str] = None
+    masks_dir: Optional[str] = os.path.join(data_dir, 'masks') # None
     # Directory to save results
-    result_dir: str = "results/Workshop"
+    result_dir: str = os.path.join(data_dir, 'dense') # "/home/mtoso/Documents/Code/AMI_Collab/2DSemanticMap/Dataset/RobotLab/dense"
     # Every N images there is a test image
     test_every: int = 8
     # Random crop size for training  (experimental)
@@ -176,7 +176,7 @@ class Config:
     model_type: Literal["2dgs", "2dgs-inria"] = "2dgs"
 
     # Enable segmentation feature field. (experimental)
-    seg_opt: bool = False
+    seg_opt: bool = True
     # Segmentation feature dimension
     seg_features_dim: int = 16
     # Learning rate for segmentation feature optimization
@@ -444,13 +444,15 @@ class Runner:
         scales = torch.exp(self.splats["scales"])  # [N, 3]
         opacities = torch.sigmoid(self.splats["opacities"])  # [N,]
 
+        # capture sh_degree from kwargs once so we can reuse it for seg rendering
+        sh_degree_local = kwargs.pop("sh_degree", self.cfg.sh_degree)
         image_ids = kwargs.pop("image_ids", None)
         if self.cfg.app_opt:
             colors = self.app_module(
                 features=self.splats["features"],
                 embed_ids=image_ids,
                 dirs=means[None, :, :] - camtoworlds[:, None, :3, 3],
-                sh_degree=kwargs.pop("sh_degree", self.cfg.sh_degree),
+                sh_degree=sh_degree_local,
             )
             colors = colors + self.splats["colors"]
             colors = torch.sigmoid(colors)
@@ -478,6 +480,7 @@ class Runner:
                 Ks=Ks,  # [C, 3, 3]
                 width=width,
                 height=height,
+                sh_degree=sh_degree_local,
                 packed=self.cfg.packed,
                 absgrad=self.cfg.absgrad,
                 sparse_grad=self.cfg.sparse_grad,
@@ -514,37 +517,34 @@ class Runner:
             # Note: This is a workaround - we rasterize seg_features with the same geometry
             seg_features_normalized = torch.tanh(seg_features)  # Normalize to [-1, 1] then we'll use abs
             
-            # Render each dimension of seg_features separately by padding to RGB
+            # Render full seg_features as multi-channel post-activation colors
             if self.model_type == "2dgs":
-                seg_render_list = []
-                for d in range(0, self.cfg.seg_features_dim, 3):
-                    # Take up to 3 dimensions at a time to fit in RGB
-                    dims = min(3, self.cfg.seg_features_dim - d)
-                    if dims < 3:
-                        # Pad with zeros
-                        seg_colors = torch.zeros((seg_features.shape[0], 1, 3), device=seg_features.device)
-                        seg_colors[:, 0, :dims] = seg_features_normalized[:, d:d+dims].unsqueeze(1)
-                    else:
-                        seg_colors = seg_features_normalized[:, d:d+dims].unsqueeze(1).expand(-1, 1, -1)
-                    
-                    (render_seg, _, _, _, _, _, _) = rasterization_2dgs(
-                        means=means,
-                        quats=quats,
-                        scales=scales,
-                        opacities=opacities,
-                        colors=seg_colors,
-                        viewmats=torch.linalg.inv(camtoworlds),
-                        Ks=Ks,
-                        width=width,
-                        height=height,
-                        packed=self.cfg.packed,
-                        absgrad=self.cfg.absgrad,
-                        sparse_grad=self.cfg.sparse_grad,
-                    )
-                    seg_render_list.append(render_seg[..., :dims])
-                
-                # Concatenate all rendered dimensions
-                render_seg_features = torch.cat(seg_render_list, dim=-1)  # [1, H, W, seg_features_dim]
+                # seg_features_normalized: [N, D]
+                seg_colors_pass = seg_features_normalized  # post-activation colors [N, D]
+                # rasterizer expects an optional camera dimension: [(C,) N, D]
+                # If camtoworlds has a camera dimension C (e.g., 1), expand to [C, N, D].
+                try:
+                    C = camtoworlds.shape[0]
+                except Exception:
+                    C = 1
+                if seg_colors_pass.dim() == 2:
+                    seg_colors_pass = seg_colors_pass.unsqueeze(0).expand(C, -1, -1)
+                (render_seg, _, _, _, _, _, _) = rasterization_2dgs(
+                    means=means,
+                    quats=quats,
+                    scales=scales,
+                    opacities=opacities,
+                    colors=seg_colors_pass,
+                    viewmats=torch.linalg.inv(camtoworlds),
+                    Ks=Ks,
+                    width=width,
+                    height=height,
+                    packed=self.cfg.packed,
+                    absgrad=self.cfg.absgrad,
+                    sparse_grad=self.cfg.sparse_grad,
+                )
+                # render_seg: [1, H, W, D]
+                render_seg_features = render_seg
 
         return (
             render_colors,

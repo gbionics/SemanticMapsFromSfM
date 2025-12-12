@@ -29,10 +29,16 @@ def resize_images(input_dir, output_dir, max_side=640):
     # Supported image file extensions
     exts = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff')
 
+    progress_bar = tqdm(range(len(os.listdir(input_dir))), desc="Pre-processing progress... Rescaling the images")
+
     for filename in os.listdir(input_dir):
         if filename.lower().endswith(exts):
             input_path = os.path.join(input_dir, filename)
             output_path = os.path.join(output_dir, filename)
+
+            if os.path.exists(output_path):
+                progress_bar.update(1)
+                continue
 
             with Image.open(input_path) as img:
                 # Determine scale factor
@@ -47,8 +53,9 @@ def resize_images(input_dir, output_dir, max_side=640):
 
                 # Save image
                 resized_img.save(output_path)
+            progress_bar.update(1)
 
-            print(f"Saved: {output_path}")
+            # print(f"Saved: {output_path}")
             
 def generate_segmentation_masks(input_dir, output_path, n_levels=1, sam2=False):
     # read the images from the input directory
@@ -56,9 +63,10 @@ def generate_segmentation_masks(input_dir, output_path, n_levels=1, sam2=False):
     images = [Image.open(os.path.join(input_dir, image_name)) for image_name in images_dirlist]
     sam = Segmentor("cuda", sam2)
 
-    progress_bar = tqdm(range(len(images)), desc="Pre-processing progress")
+    progress_bar = tqdm(range(len(images)), desc="Pre-processing progress... Extracting segmentation masks")
     
     for img, dir in zip(images, images_dirlist):
+        
         orig_w, orig_h = img.size
         if orig_w > 1600:
             scale = orig_h / 1080
@@ -66,6 +74,10 @@ def generate_segmentation_masks(input_dir, output_path, n_levels=1, sam2=False):
             img = img.resize(resolution)
         img_numpy = np.array(img.convert("RGB"))
         img_name = dir.split('.')[0]
+        
+        if os.path.exists(os.path.join(output_path, img_name + ".npy")): 
+            progress_bar.update(1)
+            continue
         
         l_maps, segmap, adj_mtx, laplacian = sam.proccess_image(img_numpy, n_levels=n_levels)
 

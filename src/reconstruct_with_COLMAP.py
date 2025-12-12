@@ -29,6 +29,13 @@ def run_colmap(images_dir, rec_dir, log_file):
     dt_string = now.strftime("%Y/%m/%d %H:%M:%S")
     log_message = '\t' + dt_string + ' - Starting feature extraction.\n'
     log_file.write(log_message)
+    command = 'QT_QPA_PLATFORM=offscreen colmap feature_extractor \
+    --image_path /home/mtoso/Documents/Code/AMI_Collab/2DSemanticMap/Dataset/CRIS_Workshop_mini/images \
+    --ImageReader.camera_model PINHOLE \
+    --SiftExtraction.estimate_affine_shape=true \
+    --SiftExtraction.domain_size_pooling=true \
+    --database_path /home/mtoso/Documents/Code/AMI_Collab/2DSemanticMap/Dataset/CRIS_Workshop_mini/sparse/database.db'
+
     command = 'colmap feature_extractor \
                --image_path {:s} \
                --ImageReader.camera_model PINHOLE\

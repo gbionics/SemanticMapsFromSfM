@@ -1,0 +1,15 @@
+torch
+torchvision
+numpy
+imageio
+imageio-ffmpeg
+tqdm
+tyro
+viser
+gsplat
+nerfview
+torchmetrics
+tensorboard
+matplotlib
+opencv-python
+scikit-learn
