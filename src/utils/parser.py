@@ -11,7 +11,7 @@ from tqdm import tqdm
 from typing_extensions import assert_never
 from concurrent.futures import ThreadPoolExecutor
 
-from utils.normalize import (
+from src.utils.normalize import (
     align_principal_axes,
     similarity_from_cameras,
     transform_cameras,

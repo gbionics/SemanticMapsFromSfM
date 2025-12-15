@@ -27,6 +27,11 @@ try:
     from sklearn.cluster import MiniBatchKMeans
 except Exception:
     MiniBatchKMeans = None
+ 
+try:
+    from sklearn.cluster import DBSCAN
+except Exception:
+    DBSCAN = None
 
 def get_random_colors(num_colors: int):
     """Generate random RGB colors in [0,1], with index 0 reserved for background (black)."""
@@ -71,6 +76,8 @@ def cluster_gaussians(
     min_samples: int = 30,
     spatial_partition: bool = True,
     voxel_size: Optional[float] = None,
+    dbscan_eps: float = 0.1,
+    dbscan_min_samples: int = 10,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Cluster gaussians using combined spatial+feature vectors.
@@ -175,6 +182,10 @@ def cluster_gaussians(
         labels = center_labels[pre_labels]
         toc = time.time()
         print(f"Two-stage clustering finished in {toc-tic:.2f}s (preclusters={n_pre})")
+    elif 'labels' in locals() and labels is not None:
+        # Labels were already produced by spatial partitioning above; skip global clustering.
+        toc = time.time()
+        print(f"Using spatial-partition labels; skipping global clustering (elapsed {toc-tic:.2f}s)")
     else:
         combined = compute_combined_features(means, features, spatial_weight=spatial_weight)
 
@@ -182,6 +193,18 @@ def cluster_gaussians(
         if method == "hdbscan" and HDBSCAN is not None:
             clim = HDBSCAN(min_cluster_size=min_cluster_size, min_samples=min_samples)
             labels = clim.fit_predict(combined)
+        elif method == "dbscan":
+            if DBSCAN is None:
+                raise RuntimeError("DBSCAN from scikit-learn is not available.")
+            # Cluster using cosine similarity on the learned features. We normalize features per-row
+            # and use metric='cosine' so DBSCAN treats close-by vectors in cosine space as neighbors.
+            print(f"Running DBSCAN on features (eps={dbscan_eps}, min_samples={dbscan_min_samples})")
+            feats_np = features.detach().cpu().numpy()
+            # normalize rows to unit length to make cosine explicit (DBSCAN metric='cosine' works either way)
+            norms = np.linalg.norm(feats_np, axis=1, keepdims=True) + 1e-12
+            feats_norm = feats_np / norms
+            db = DBSCAN(metric="cosine", eps=float(dbscan_eps), min_samples=int(dbscan_min_samples), n_jobs=-1)
+            labels = db.fit_predict(feats_norm)
         else:
             # fallback to kmeans
             if n_clusters is None:
@@ -256,39 +279,45 @@ def render_previews(
     height: int = 600,
 ):
     os.makedirs(out_dir, exist_ok=True)
-    means = torch.as_tensor(splats["means"]).float()
-    quats = torch.as_tensor(splats["quats"]).float()
-    scales = torch.exp(torch.as_tensor(splats["scales"]).float())
-    opacities = torch.sigmoid(torch.as_tensor(splats["opacities"]).float())
+    # choose device: use CUDA if available so the CUDA-backed rasterizer receives CUDA tensors
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    means = torch.as_tensor(splats["means"]).to(device).float()
+    quats = torch.as_tensor(splats["quats"]).to(device).float()
+    scales = torch.exp(torch.as_tensor(splats["scales"]).to(device).float())
+    opacities = torch.sigmoid(torch.as_tensor(splats["opacities"]).to(device).float())
 
     # colors: prefer 'colors' then sh0+shN
     if "colors" in splats:
-        colors = torch.as_tensor(splats["colors"]).float()
+        colors = torch.as_tensor(splats["colors"]).to(device).float()
     elif "sh0" in splats:
         # reconstruct per-gaussian RGB from sh0 (only band 0)
-        sh0 = torch.as_tensor(splats["sh0"]).float()
+        sh0 = torch.as_tensor(splats["sh0"]).to(device).float()
         colors = torch.sigmoid(sh0[:, 0, :])
     else:
         # fallback: random
-        colors = torch.rand((means.shape[0], 3))
+        colors = torch.rand((means.shape[0], 3), device=device, dtype=means.dtype)
 
     # create simple circular camera poses around scene centroid
     centroid = means.mean(0)
     radius = (means - centroid).abs().max().item() * 4.0 + 1.0
     focal = 500.0
-    K = torch.tensor([[focal, 0, width / 2.0], [0, focal, height / 2.0], [0, 0, 1.0]])
+    # ensure K uses same dtype/device as tensors
+    K = torch.tensor([[focal, 0, width / 2.0], [0, focal, height / 2.0], [0, 0, 1.0]], dtype=means.dtype, device=means.device)
 
     for i in tqdm.tqdm(range(num_views), desc="rendering previews"):
         theta = 2 * np.pi * (i / num_views)
-        cam_pos = centroid + torch.tensor([radius * np.cos(theta), radius * np.sin(theta), radius * 0.1])
+        # create cam_pos and up with the same dtype/device as means to avoid type promotion
+        cam_offset = torch.tensor([radius * np.cos(theta), radius * np.sin(theta), radius * 0.1], dtype=means.dtype, device=means.device)
+        cam_pos = centroid.to(dtype=means.dtype) + cam_offset
         # build c2w
-        up = torch.tensor([0.0, 0.0, 1.0])
+        up = torch.tensor([0.0, 0.0, 1.0], dtype=means.dtype, device=means.device)
         forward = (cam_pos - centroid)
         forward = forward / torch.linalg.norm(forward)
-        right = torch.cross(up, forward)
+        # use torch.linalg.cross to avoid deprecated torch.cross signature
+        right = torch.linalg.cross(up, forward)
         right = right / torch.linalg.norm(right)
-        upv = torch.cross(forward, right)
-        c2w = torch.eye(4)
+        upv = torch.linalg.cross(forward, right)
+        c2w = torch.eye(4, dtype=means.dtype, device=means.device)
         c2w[:3, 0] = right
         c2w[:3, 1] = upv
         c2w[:3, 2] = forward
@@ -309,7 +338,7 @@ def render_previews(
             absgrad=False,
             sparse_grad=False,
         )
-        img = (render_colors[0, ..., :3].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+        img = (render_colors[0, ..., :3].clamp(0, 1).detach().cpu().numpy() * 255).astype(np.uint8)
         from imageio import imwrite
 
         imwrite(os.path.join(out_dir, f"preview_{i:02d}.png"), img)
@@ -371,7 +400,7 @@ def make_viewer_render_fn(splats: dict, device: str = "cpu"):
         )
 
         # return numpy image as Viewer expects
-        img = render_colors[0, ..., :3].clamp(0, 1).cpu().numpy()
+        img = render_colors[0, ..., :3].clamp(0, 1).detach().cpu().numpy()
         return img
 
     return render_fn
@@ -379,37 +408,46 @@ def make_viewer_render_fn(splats: dict, device: str = "cpu"):
 
 def render_trajectory_video(splats: dict, out_path: str, num_frames: int = 120, width: int = 800, height: int = 600):
     """Render a sequence of views around the scene centroid and save as mp4."""
-    means, quats, scales, opacities, colors = _build_splats_tensors(splats, device="cpu")
-    centroid = means.mean(0)
-    radius = (means - centroid).abs().max().item() * 4.0 + 1.0
+    # Build a CPU-only camera path (path stored as numpy arrays) then render using CUDA if available.
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # build CPU tensors to compute centroid and path
+    means_cpu, quats_cpu, scales_cpu, opacities_cpu, colors_cpu = _build_splats_tensors(splats, device="cpu")
+    centroid = means_cpu.mean(0)
+    radius = (means_cpu - centroid).abs().max().item() * 4.0 + 1.0
 
-    # create simple circular path of camera-to-world matrices
+    # create simple circular path of camera-to-world matrices (kept on CPU so we can store .numpy())
     path = []
     for i in range(num_frames):
         theta = 2 * np.pi * (i / num_frames)
-        cam_pos = centroid + torch.tensor([radius * np.cos(theta), radius * np.sin(theta), radius * 0.1])
-        up = torch.tensor([0.0, 0.0, 1.0])
+        cam_offset = torch.tensor([radius * np.cos(theta), radius * np.sin(theta), radius * 0.1], dtype=means_cpu.dtype, device=means_cpu.device)
+        cam_pos = centroid.to(dtype=means_cpu.dtype) + cam_offset
+        up = torch.tensor([0.0, 0.0, 1.0], dtype=means_cpu.dtype, device=means_cpu.device)
         forward = (cam_pos - centroid)
         forward = forward / torch.linalg.norm(forward)
-        right = torch.cross(up, forward)
+        right = torch.linalg.cross(up, forward)
         right = right / torch.linalg.norm(right)
-        upv = torch.cross(forward, right)
-        c2w = torch.eye(4)
+        upv = torch.linalg.cross(forward, right)
+        c2w = torch.eye(4, dtype=means_cpu.dtype, device=means_cpu.device)
         c2w[:3, 0] = right
         c2w[:3, 1] = upv
         c2w[:3, 2] = forward
         c2w[:3, 3] = cam_pos
-        path.append(c2w.numpy())
+        path.append(c2w.cpu().numpy())
+
+    # Now build tensors on the preferred device for rendering
+    means, quats, scales, opacities, colors = _build_splats_tensors(splats, device=device)
 
     # Focal and K
     focal = 500.0
-    K = np.array([[focal, 0, width / 2.0], [0, focal, height / 2.0], [0, 0, 1.0]], dtype=np.float32)
+    # K on the same device/dtype as rendering tensors
+    K = torch.tensor([[focal, 0, width / 2.0], [0, focal, height / 2.0], [0, 0, 1.0]], device=means.device, dtype=means.dtype)
 
     # Render frames and write video
     import imageio
     writer = imageio.get_writer(out_path, fps=30)
     for c2w in tqdm.tqdm(path, desc="rendering trajectory"):
-        c2w_t = torch.from_numpy(c2w).float()
+        # convert cpu numpy path to rendering device/dtype
+        c2w_t = torch.from_numpy(c2w).to(device=means.device, dtype=means.dtype)
         render_colors, *_ = rasterization_2dgs(
             means=means,
             quats=quats,
@@ -417,7 +455,7 @@ def render_trajectory_video(splats: dict, out_path: str, num_frames: int = 120, 
             opacities=torch.sigmoid(opacities),
             colors=colors.unsqueeze(0),
             viewmats=torch.linalg.inv(c2w_t.unsqueeze(0)),
-            Ks=torch.from_numpy(K).unsqueeze(0),
+            Ks=K.unsqueeze(0),
             width=width,
             height=height,
             sh_degree=None,
@@ -425,13 +463,14 @@ def render_trajectory_video(splats: dict, out_path: str, num_frames: int = 120, 
             absgrad=False,
             sparse_grad=False,
         )
-        img = (render_colors[0, ..., :3].clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)
+        img = (render_colors[0, ..., :3].clamp(0, 1).detach().cpu().numpy() * 255).astype(np.uint8)
         writer.append_data(img)
     writer.close()
 
 
 def segment_feature_field(ckpt_path: str, out_dir: Optional[str] = None):
-    device = "cpu"
+    # prefer CUDA for rendering if available; clustering will move tensors to CPU as needed
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     splats = load_splats_from_ckpt(ckpt_path, device=device)
 
     # determine feature tensor to use
@@ -465,7 +504,24 @@ def segment_feature_field(ckpt_path: str, out_dir: Optional[str] = None):
 
     colors = assign_cluster_colors(labels)
 
-    out_path = out_dir or (str(Path(ckpt_path).with_suffix("")) + "_clustered.pt")
+    # Determine output path: allow `--out` to be either a directory or a file path.
+    if out_dir is None:
+        out_path = str(Path(ckpt_path).with_suffix("")) + "_clustered.pt"
+    else:
+        out_p = Path(out_dir)
+        # If path exists and is a directory, write a file inside it.
+        if out_p.exists() and out_p.is_dir():
+            out_path = str(out_p / (Path(ckpt_path).stem + "_clustered.pt"))
+        else:
+            # If given path has a .pt suffix, treat it as the full file path (create parent dir).
+            if out_p.suffix == ".pt":
+                out_p.parent.mkdir(parents=True, exist_ok=True)
+                out_path = str(out_p)
+            else:
+                # Treat as a directory path (may not exist yet) and create it.
+                out_p.mkdir(parents=True, exist_ok=True)
+                out_path = str(out_p / (Path(ckpt_path).stem + "_clustered.pt"))
+
     save_clustered_ckpt(ckpt_path, out_path, colors)
 
     preview_dir = Path(out_path).parent / "cluster_previews"
@@ -477,7 +533,7 @@ def segment_feature_field(ckpt_path: str, out_dir: Optional[str] = None):
         import viser
 
         server = viser.ViserServer(port=8080, verbose=False)
-        render_fn = make_viewer_render_fn(splats, device="cpu")
+        render_fn = make_viewer_render_fn(splats, device=device)
         viewer = GsplatViewer(server=server, render_fn=render_fn, output_dir=Path(preview_dir), mode="rendering")
         print("Viewer running at http://localhost:8080 — press Ctrl+C to exit")
         try:

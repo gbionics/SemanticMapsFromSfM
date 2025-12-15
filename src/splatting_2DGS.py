@@ -14,13 +14,13 @@ import torch.nn.functional as F
 import tqdm
 import tyro
 import viser
-from utils.parser import Parser, Dataset
-from utils.traj import generate_interpolated_path
+from src.utils.parser import Parser, Dataset
+from src.utils.traj import generate_interpolated_path
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-from utils.utils import (
+from src.utils.utils import (
     AppearanceOptModule,
     CameraOptModule,
     apply_depth_colormap,
@@ -31,7 +31,7 @@ from utils.utils import (
     initialize_seg_features,
     hierarchical_contrastive_loss,
 )
-from utils.gsplat_viewer_2dgs import GsplatViewer, GsplatRenderTabState
+from src.utils.gsplat_viewer_2dgs import GsplatViewer, GsplatRenderTabState
 from gsplat.rendering import rasterization_2dgs, rasterization_2dgs_inria_wrapper
 from gsplat.strategy import DefaultStrategy
 from nerfview import CameraState, RenderTabState, apply_float_colormap
@@ -204,6 +204,9 @@ class Config:
         self.refine_stop_iter = int(self.refine_stop_iter * factor)
         self.reset_every = int(self.reset_every * factor)
         self.refine_every = int(self.refine_every * factor)
+
+    # When to enter semantic-only training stage (freeze geometry/appearance); set to <=0 to disable
+    semantic_only_start: int = 20000
 
 
 def create_splats_with_optimizers(
@@ -412,6 +415,58 @@ class Runner:
                 )
             ]
 
+        # flag to track if we've entered semantic-only training stage
+        self._semantic_only = False
+
+    def _enter_semantic_only(self):
+        """Freeze all splat parameters except 'seg_features' and keep only the optimizer(s) for seg_features.
+
+        This method will:
+            - set requires_grad = False for all parameters in self.splats except 'seg_features'
+            - remove other optimizers from self.optimizers and clear pose/app optimizers
+            - ensure seg_optimizers contains an optimizer for 'seg_features'
+        """
+        if self._semantic_only:
+            return
+        print("Entering semantic-only training stage: freezing geometry and appearance parameters.")
+
+        # Freeze parameters (disable gradients) for all splat params except seg_features
+        for name, param in self.splats.items():
+            if name == "seg_features":
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
+                # clear any existing gradients to avoid accidental updates
+                if param.grad is not None:
+                    param.grad = None
+
+        # Keep only the optimizer(s) that update seg_features
+        new_optimizers = {}
+        if "seg_features" in self.optimizers:
+            new_optimizers["seg_features"] = self.optimizers["seg_features"]
+        else:
+            # create an optimizer for seg_features if none exists in the main optimizer dict
+            if "seg_features" in self.splats:
+                new_optimizers["seg_features"] = torch.optim.Adam(
+                    [self.splats["seg_features"]], lr=self.cfg.seg_opt_lr * math.sqrt(self.cfg.batch_size), weight_decay=self.cfg.seg_opt_reg
+                )
+
+        self.optimizers = new_optimizers
+
+        # Clear other specialized optimizers (pose/app) so they don't step
+        self.pose_optimizers = []
+        self.app_optimizers = []
+
+        # Ensure seg_optimizers is present and consistent
+        if "seg_features" in self.splats:
+            # replace seg_optimizers with a single optimizer that points to the same optimizer (if available)
+            if "seg_features" in self.optimizers:
+                self.seg_optimizers = [self.optimizers["seg_features"]]
+            else:
+                self.seg_optimizers = [torch.optim.Adam([self.splats["seg_features"]], lr=self.cfg.seg_opt_lr * math.sqrt(self.cfg.batch_size), weight_decay=self.cfg.seg_opt_reg)]
+
+        self._semantic_only = True
+
         # Losses & Metrics.
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
         self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
@@ -602,6 +657,11 @@ class Runner:
                     time.sleep(0.01)
                 self.viewer.lock.acquire()
                 tic = time.time()
+
+            # Optionally enter semantic-only stage where geometry/appearance are frozen
+            if cfg.semantic_only_start and cfg.semantic_only_start > 0 and step >= cfg.semantic_only_start and not self._semantic_only:
+                # perform the switch once
+                self._enter_semantic_only()
 
             try:
                 data = next(trainloader_iter)
