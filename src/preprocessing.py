@@ -129,7 +129,7 @@ def prepare_dirs(model_dir):
     os.makedirs(masks_dir, exist_ok=True)
     os.makedirs(visual_dir, exist_ok=True)
 
-    return images_dir, sparse_dir, masks_dir, visual_dir
+    return images_dir, sparse_dir, masks_dir, visual_dir, dense_dir
 
 # 1) Resize all images before to make the reconstruction and NVS work easier
 

@@ -415,8 +415,26 @@ class Runner:
                 )
             ]
 
+        # Viewer: create early so train() can reference `self.viewer`.
+        if not cfg.disable_viewer:
+            # create server/viewer only once
+            self.server = viser.ViserServer(port=cfg.port, verbose=False)
+            self.viewer = GsplatViewer(
+                server=self.server,
+                render_fn=self._viewer_render_fn,
+                output_dir=Path(cfg.result_dir),
+                mode="training",
+            )
+
         # flag to track if we've entered semantic-only training stage
         self._semantic_only = False
+
+        # Losses & Metrics: initialize metrics so they are available during training
+        self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
+        self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
+        self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True).to(
+            self.device
+        )
 
     def _enter_semantic_only(self):
         """Freeze all splat parameters except 'seg_features' and keep only the optimizer(s) for seg_features.
@@ -476,13 +494,16 @@ class Runner:
 
         # Viewer
         if not self.cfg.disable_viewer:
-            self.server = viser.ViserServer(port=cfg.port, verbose=False)
-            self.viewer = GsplatViewer(
-                server=self.server,
-                render_fn=self._viewer_render_fn,
-                output_dir=Path(cfg.result_dir),
-                mode="training",
-            )
+            # create server/viewer if not already created in __init__
+            if not hasattr(self, "server"):
+                self.server = viser.ViserServer(port=self.cfg.port, verbose=False)
+            if not hasattr(self, "viewer"):
+                self.viewer = GsplatViewer(
+                    server=self.server,
+                    render_fn=self._viewer_render_fn,
+                    output_dir=Path(self.cfg.result_dir),
+                    mode="training",
+                )
 
     def rasterize_splats(
         self,
