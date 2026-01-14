@@ -53,7 +53,6 @@ def run_colmap(images_dir, rec_dir, log_file):
     command = 'export QT_QPA_PLATFORM=offscreen'
     os.system(command)
     command = 'colmap exhaustive_matcher \
-               --SiftMatching.guided_matching=true \
                --database_path {:s}/database.db'.format(rec_dir)
     # This might be needed to limit memory usage: --SiftMatching.max_num_matches 10000 \
     print(command)
@@ -69,7 +68,7 @@ def run_colmap(images_dir, rec_dir, log_file):
     command = 'colmap mapper \
                --database_path {:s}/database.db \
                --image_path {:s} \
-               --output_path {:s}'.format(rec_dir, images_dir, rec_dir)
+               --output_path {:s}'.format(rec_dir, images_dir, rec_dir + "/sparse/")
     # --ba_local_max_num_iterations=40 \
     # --ba_local_max_refinements=3 \
     # --ba_global_max_num_iterations=100'.format(data_root_path, data_root_path, data_root_path)

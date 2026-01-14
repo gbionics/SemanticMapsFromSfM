@@ -1,0 +1,19 @@
+name: gsplat_modelling
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - imageio-ffmpeg
+  - imageio
+  - tensorboard
+  - scipy
+  - opencv
+  - scikit-learn
+  - scikit-image
+  - matplotlib
+  - numpy
+  - pyyaml
+  - tqdm
+  - plyfile
+  - pycolmap
+prefix: /home/mtoso/miniforge3/envs/gsplat_modelling
