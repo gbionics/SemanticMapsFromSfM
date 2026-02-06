@@ -6,7 +6,7 @@ from src.splatting_2DGS import Config, Runner
 from src.splatting_3DGS import Config as Config3DGS
 
 root_dir = os.getcwd()
-path_to_raw_images = '/home/mtoso/Documents/Code/SemanticMapsFromSfM/Dataset/Debug/raw_images/'
+path_to_raw_images = '/home/mtoso/Documents/SemanticMapsFromSfM/Dataset/Debug/raw_images/'
 model_name = 'Debug'
 
 preprocess = True

@@ -4,6 +4,43 @@
 
 ## Setting up the CONDA environment
 '''
+conda create -n gsplat_modelling python=3.11 -y
+
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu130
+
+conda install -c conda-forge \                                                                           
+    numpy \
+    scipy \
+    opencv \
+    scikit-learn \
+    scikit-image \
+    matplotlib \
+    imageio \
+    imageio-ffmpeg \
+    tqdm \
+    tensorboard \
+    pyyaml \
+    plyfile \
+    -y
+conda install -c conda-forge numpy scipy opencv scikit-learn scikit-image matplotlib imageio imageio-ffmpeg tqdm tensorboard pyyaml plyfile    -y
+
+pip install \                                                                                            
+    tyro \
+    viser \
+    gsplat \
+    nerfview \
+    torchmetrics \
+    trimesh \
+    open3d \
+    splines \
+    pycolmap \
+    segment-anything \
+    sam2
+
+pip install git+https://github.com/rahul-goel/fused-ssim/ --no-build-isolation
+'''
+
+Old version:
 conda create -n splatting python=3.11
 conda activate splatting
 pip install torch torchvision
@@ -12,7 +49,6 @@ pip install gsplat imageio tyro viser pyyaml opencv-python pycolmap torchmetrics
 pip install git+https://github.com/rahul-goel/fused-ssim/ --no-build-isolation
 pip install imageio-ffmpeg
 pip install sam2 segment-anything
-'''
 
 # Viewing clustered Gaussian splats
 
